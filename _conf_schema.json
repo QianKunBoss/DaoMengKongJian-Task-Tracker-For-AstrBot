@@ -1,0 +1,112 @@
+{
+  "account": {
+    "type": "object",
+    "description": "到梦空间账号（用于登录拉取活动）",
+    "items": {
+      "phone": {
+        "type": "string",
+        "description": "登录手机号",
+        "default": ""
+      },
+      "password": {
+        "type": "string",
+        "description": "登录密码",
+        "default": "",
+        "secret": true
+      }
+    }
+  },
+  "poll_interval": {
+    "type": "int",
+    "description": "轮询间隔（秒），默认 60",
+    "default": 60
+  },
+  "timeout": {
+    "type": "int",
+    "description": "到梦空间接口请求超时（秒），默认 12；网络慢可适当调大",
+    "default": 12
+  },
+  "push_threshold": {
+    "type": "int",
+    "description": "推荐阈值：性价比评分 >= 此值才推送（已按该校学分重校准，默认 60，值域 0~100）",
+    "default": 60
+  },
+  "startup_push": {
+    "type": "bool",
+    "description": "开机自动扫描：总结当前全部活动，并推送推荐的（高性价比）活动，默认 true",
+    "default": true
+  },
+  "startup_notice": {
+    "type": "bool",
+    "description": "开机推送上线通知（插件状态/登录账号/剩余待处理量），默认 true",
+    "default": true
+  },
+  "llm": {
+    "type": "object",
+    "description": "AI 评分（使用 AstrBot 已配置的模型，无需再填 API Key）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "是否启用 AI 评分（false=规则兜底，0 token；true=用 AstrBot 已保存的模型）",
+        "default": false
+      },
+      "provider": {
+        "type": "string",
+        "description": "选择用于评分的 AstrBot 模型（下拉选择；留空=用 AstrBot 默认模型）",
+        "_special": "select_provider",
+        "default": ""
+      },
+      "batch_size": {
+        "type": "int",
+        "description": "每次 LLM 调用打包的活动条数，默认 12；模型响应慢/超时可调小（如 6）",
+        "default": 12
+      }
+    }
+  },
+  "push": {
+    "type": "object",
+    "description": "推送目标配置",
+    "items": {
+      "as_image": {
+        "type": "bool",
+        "description": "推荐较多时改用长图卡片推送（更清爽；渲染失败自动回退文本）",
+        "default": true
+      },
+      "image_min": {
+        "type": "int",
+        "description": "推荐条数达到此值才用长图，否则用文本（默认 6）",
+        "default": 6
+      },
+      "send_gap": {
+        "type": "int",
+        "description": "同一轮推送中多条消息之间的间隔秒数（默认 3；微信 iLink 通道有突发频控，间隔太短会被惩罚）",
+        "default": 3
+      },
+      "send_backoff": {
+        "type": "int",
+        "description": "推送失败后的退避秒数（默认 15；微信 iLink 返回 ret=-2 表示频控惩罚，热重试会延长惩罚）",
+        "default": 15
+      },
+      "session": {
+        "type": "string",
+        "description": "unified_msg_origin 会话标识（在目标群/私聊发 /dmkj session 复制，推荐用这个）",
+        "default": ""
+      },
+      "platform_id": {
+        "type": "string",
+        "description": "备选：aiocqhttp(QQ) 平台时用，填平台 id",
+        "default": ""
+      },
+      "target_id": {
+        "type": "string",
+        "description": "备选：QQ 号/群号（仅 aiocqhttp 生效）",
+        "default": ""
+      },
+      "is_group": {
+        "type": "bool",
+        "description": "备选：target_id 是否为群",
+        "default": false
+      }
+    }
+  }
+}

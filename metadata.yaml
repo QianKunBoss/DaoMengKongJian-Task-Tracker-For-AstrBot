@@ -1,0 +1,4 @@
+name: astrbot_plugin_dmkj_finder
+author: QKboss
+desc: 到梦空间活动探测与 AI 筛选推送（自动找出学分高、付出低的活动并推送到微信/群）
+version: 1.0.0
