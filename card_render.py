@@ -85,17 +85,21 @@ def render_card(data: dict, out_path: str) -> str:
     per = []
     for it in items:
         name_lines = _wrap(td, it.get("name", ""), f_name, name_max_w)
-        reason_lines = _wrap(td, it.get("reason", ""), f_reason, reason_max_w)
-        h = 72 + len(name_lines) * 24 + len(reason_lines) * 20
+        reason_lines = (_wrap(td, it.get("eligibility", "报名资格尚未获取"), f_reason, reason_max_w)
+                        + _wrap(td, it.get("reason", ""), f_reason, reason_max_w))
+        h = 72 + len(name_lines) * 24 + len(reason_lines) * 20 + (34 if it.get("group") else 0)
         per.append((it, name_lines, reason_lines, h))
 
-    H = max(700, PAD + 168 + GAP + sum(h + GAP for _, _, _, h in per) + 50)
+    summary_lines = []
+    for line in str(data.get("eligibility_summary") or "").splitlines():
+        summary_lines.extend(_wrap(td, line, f_sub, inner_w - 40))
+    head_h = 168 + len(summary_lines) * 21
+    H = max(700, PAD + head_h + GAP + sum(h + GAP for _, _, _, h in per) + 50)
     img = Image.new("RGB", (W, H), C_BG)
     d = ImageDraw.Draw(img)
 
     # ---- 头部 ----
     y = PAD
-    head_h = 168
     d.rounded_rectangle([PAD, y, W - PAD, y + head_h], radius=16, fill=C_HEADER)
     d.text((PAD + 20, y + 14), str(data.get("title", "")), font=f_title, fill=C_WHITE)
     d.text((PAD + 20, y + 46), f'{data.get("date", "")} · 到梦空间活动探测', font=f_sub, fill=C_SUB)
@@ -113,14 +117,21 @@ def render_card(data: dict, out_path: str) -> str:
         n = str(num)
         d.text((x0 + (tw - d.textlength(n, font=f_num)) / 2, ty + 5), n, font=f_num, fill=col)
         d.text((x0 + (tw - d.textlength(lbl, font=f_lbl)) / 2, ty + 33), lbl, font=f_lbl, fill=C_MUTED)
-    d.text((PAD + 20, y + 140), f'已筛选 {len(items)} 条推荐（按评分排序）', font=f_sub, fill=C_SUB)
+    d.text((PAD + 20, y + 140), f'共展示 {len(items)} 条 · 按报名资格与开放/截止时间排序', font=f_sub, fill=C_SUB)
+    for index, line in enumerate(summary_lines):
+        d.text((PAD + 20, y + 164 + index * 21), line, font=f_sub, fill=C_SUB)
     y += head_h + GAP
 
     # ---- 推荐卡片 ----
     for it, name_lines, reason_lines, h in per:
         x0, x1 = PAD, W - PAD
-        d.rounded_rectangle([x0, y, x1, y + h], radius=12, fill=C_WHITE)
-        bar = C_STAR if (it.get("score") or 0) >= 70 else C_BLUE
+        if it.get("group"):
+            d.text((x0 + 4, y + 4), str(it["group"]), font=f_name, fill=C_HEADER)
+            y += 34
+            h -= 34
+        dimmed = it.get("dimmed", False)
+        d.rounded_rectangle([x0, y, x1, y + h], radius=12, fill=(237, 240, 244) if dimmed else C_WHITE)
+        bar = C_MUTED if dimmed else C_STAR if (it.get("score") or 0) >= 70 else C_BLUE
         d.rectangle([x0, y + 10, x0 + 4, y + h - 10], fill=bar)
 
         badge = f'{it.get("score", 0)}分 · {it.get("label_short", "")}'
@@ -131,7 +142,7 @@ def render_card(data: dict, out_path: str) -> str:
 
         ny = y + 16
         for ln in name_lines:
-            d.text((x0 + 18, ny), ln, font=f_name, fill=C_TITLE)
+            d.text((x0 + 18, ny), ln, font=f_name, fill=C_MUTED if dimmed else C_TITLE)
             ny += 24
         d.text((x0 + 18, ny + 2), f'学分：{it.get("credit", "-")}　时间：{it.get("time", "")}',
                font=f_meta, fill=C_META)
@@ -140,7 +151,7 @@ def render_card(data: dict, out_path: str) -> str:
         d.rounded_rectangle([x0 + 14, ry, x1 - 14, ry + box_h], radius=8, fill=C_REASON_BG)
         ry2 = ry + 6
         for ln in reason_lines:
-            d.text((x0 + 24, ry2), ln, font=f_reason, fill=C_REASON)
+            d.text((x0 + 24, ry2), ln, font=f_reason, fill=C_MUTED if dimmed else C_REASON)
             ry2 += 20
         y += h + GAP
 

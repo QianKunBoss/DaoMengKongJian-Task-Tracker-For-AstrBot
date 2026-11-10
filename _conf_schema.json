@@ -21,6 +21,48 @@
     "description": "轮询间隔（秒），默认 60",
     "default": 60
   },
+  "eligibility": {
+    "type": "object",
+    "description": "报名资格判断与可参与优先排序",
+    "items": {
+      "notify_changes": {
+        "type": "bool",
+        "description": "原本受限/满员/等待开放的活动变为等待报名或可报名时提醒",
+        "default": true
+      },
+      "cache_ttl": {
+        "type": "int",
+        "description": "稳定资格详情缓存秒数，默认600，最小60；可操作状态按轮询间隔刷新",
+        "default": 600
+      },
+      "college_id": {
+        "type": "string",
+        "description": "当前账号院系ID备用值；优先取登录响应，留空且登录未返回时不猜测学院归属",
+        "default": ""
+      }
+    }
+  },
+  "signup_reminder": {
+    "type": "object",
+    "description": "报名开始前提醒（独立于新活动推荐阈值）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用报名开始前提醒",
+        "default": true
+      },
+      "minutes_before": {
+        "type": "int",
+        "description": "报名开始前多少分钟提醒，默认 10，最小 1",
+        "default": 10
+      },
+      "priorities": {
+        "type": "list",
+        "description": "需要提醒的等级，可填写高性价比、中、低性价比；默认只提醒高性价比",
+        "default": ["高性价比"]
+      }
+    }
+  },
   "timeout": {
     "type": "int",
     "description": "到梦空间接口请求超时（秒），默认 12；网络慢可适当调大",

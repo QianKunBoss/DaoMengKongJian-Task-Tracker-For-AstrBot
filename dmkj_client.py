@@ -82,6 +82,10 @@ def des_encrypt_password(pwd: str) -> str:
     return b2a_hex(ct).upper().decode("ascii")
 
 
+class SessionExpiredError(RuntimeError):
+    pass
+
+
 class DmkjClient:
     """精简版 v6 客户端：登录 + 拉活动列表。"""
 
@@ -113,7 +117,8 @@ class DmkjClient:
             raise RuntimeError(f"登录失败: {msg}")
         d = j["data"]
         return {"uid": d["uid"], "token": d["token"],
-                "name": d.get("name"), "school": d.get("schoolName")}
+                "name": d.get("name"), "school": d.get("schoolName"),
+                "collegeId": d.get("collegeId") or d.get("collegeid")}
 
     def _post(self, endpoint: str, biz: dict, ctx: dict):
         params = {
@@ -124,7 +129,10 @@ class DmkjClient:
         d = build_d(params)
         r = self.session.post(BASE_URL + endpoint, headers=self._headers(),
                               data={"d": d}, timeout=self.timeout)
-        return r.json()
+        result = r.json()
+        if str(result.get("code")) in ("10007", "10005"):
+            raise SessionExpiredError("到梦空间登录态已失效")
+        return result
 
     def list_activities(self, ctx: dict, search: dict = None):
         search = search or {}
@@ -141,13 +149,17 @@ class DmkjClient:
             "level": search.get("level", ""),
         }
         j = self._post("activity/activities", biz, ctx)
+        if str(j.get("code")) != "100":
+            raise RuntimeError(f"活动列表请求失败（code={j.get('code')}）")
         out = []
         for it in (j.get("data") or {}).get("list") or []:
             out.append({
-                "activityId": it.get("activityId"),
+                "activityId": it.get("activityId") or it.get("aid"),
                 "name": it.get("name"),
                 "statusText": it.get("statusText"),
                 "activitytime": it.get("activitytime"),
+                "joinStartTime": (it.get("joinstartdate") or it.get("joinStartDate")
+                                  or it.get("joinStartTime") or it.get("joinstarttime")),
                 "credit": it.get("maxScore"),
             })
         return out
@@ -155,7 +167,7 @@ class DmkjClient:
     def get_detail(self, ctx: dict, activity_id):
         biz = {"activityId": activity_id}
         j = self._post("activity/detail", biz, ctx)
-        if j.get("code") != "100":
+        if str(j.get("code")) != "100":
             return None
         return j.get("data") or {}
 

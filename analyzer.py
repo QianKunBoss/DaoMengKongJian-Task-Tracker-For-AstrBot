@@ -105,6 +105,7 @@ def _rule_one(a: dict, push_threshold: int) -> dict:
         "score": score,
         "label": label,
         "reason": "；".join(parts),
+        "source": "rule",
     }
 
 
@@ -168,7 +169,7 @@ def parse_llm_result(raw_text, activities, cfg: dict) -> list:
         push = bool(r.get("push", score >= push_threshold))
         label = str(r.get("label") or _label(score))
         reason = str(r.get("reason") or "")
-        out.append({"id": aid, "push": push, "score": score, "label": label, "reason": reason})
+        out.append({"id": aid, "push": push, "score": score, "label": label, "reason": reason, "source": "llm"})
         got.add(aid)
     # 漏网的（LLM 没返回）用规则补，保证每条都有结果
     for a in activities:
