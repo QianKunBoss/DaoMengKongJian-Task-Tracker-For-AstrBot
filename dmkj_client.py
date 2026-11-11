@@ -11,12 +11,48 @@ import json
 import secrets
 import string
 import time
+import re
+from datetime import datetime, timedelta, timezone
 from binascii import b2a_hex
 
 import requests
 from Crypto.Cipher import AES, DES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
+
+
+def activity_started(activity: dict, now: float | None = None) -> bool:
+    """仅过滤已开始举行/结束的活动；报名中不代表活动已经举行。"""
+    now = time.time() if now is None else now
+    tz = timezone(timedelta(hours=8))
+    status = str(activity.get("statusText") or "").strip()
+    if any(word in status for word in ("已结束", "已开始", "进行中", "已取消", "已终止")) and "报名" not in status:
+        return True
+    for key in ("startdateDate", "activityStartTime", "startTime"):
+        value = activity.get(key)
+        if value in (None, "", 0, "0") or isinstance(value, bool):
+            continue
+        try:
+            stamp = float(value)
+            if stamp >= 100_000_000_000:
+                stamp /= 1000
+            if stamp > 0:
+                return stamp <= now
+        except (ValueError, TypeError, OverflowError):
+            pass
+    for key in ("startdate", "activitytime"):
+        text = str(activity.get(key) or "")
+        match = re.search(r"(\d{4})[.年/-](\d{1,2})[.月/-](\d{1,2})日?(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?", text)
+        if not match:
+            continue
+        year, month, day, hour, minute, second = match.groups()
+        try:
+            start = datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0), tzinfo=tz)
+            # 当天仅有日期时不猜测午夜开场，保留到下一天。
+            return start.timestamp() <= now if hour is not None else start.date() < datetime.fromtimestamp(now, tz).date()
+        except ValueError:
+            continue
+    return False
 
 # ---------------- 常量 ----------------
 BASE_URL = "https://appdmkj.5idream.net/v2/"
@@ -157,6 +193,9 @@ class DmkjClient:
                 "activityId": it.get("activityId") or it.get("aid"),
                 "name": it.get("name"),
                 "statusText": it.get("statusText"),
+                "startdateDate": it.get("startdateDate"),
+                "startdate": it.get("startdate"),
+                "activityStartTime": it.get("activityStartTime"),
                 "activitytime": it.get("activitytime"),
                 "joinStartTime": (it.get("joinstartdate") or it.get("joinStartDate")
                                   or it.get("joinStartTime") or it.get("joinstarttime")),
@@ -184,7 +223,7 @@ class DmkjClient:
                 before_request()
             items = self.list_activities(ctx, {**search, "page": page})
             if not items:
-                return out
+                return [a for a in out if not activity_started(a)]
             fresh = []
             for activity in items:
                 aid = activity.get("activityId")
@@ -195,12 +234,12 @@ class DmkjClient:
                     seen.add(key)
                     fresh.append(activity)
                     if len(out) + len(fresh) >= max_activities:
-                        return out + fresh
+                        return [a for a in out + fresh if not activity_started(a)]
             if not fresh:
                 raise RuntimeError(f"活动列表第 {page} 页重复且无新增 ID，取消本轮扫描以避免遗漏活动")
             out.extend(fresh)
             page += 1
-        return out
+        return [a for a in out if not activity_started(a)]
 
     @staticmethod
     def fetch(cfg: dict):

@@ -56,14 +56,14 @@ except ImportError:  # pragma: no cover
 
 # 导入兼容：AstrBot 可能以包或模块方式加载插件
 try:
-    from .dmkj_client import DmkjClient, SessionExpiredError
+    from .dmkj_client import DmkjClient, SessionExpiredError, activity_started
     from .analyzer import judge, judge_rule, build_user_prompt, parse_llm_result
     from .seen_store import SeenStore
     from .reminders import ReminderStore, reminder_options, signup_timestamp, CHINA_TZ
     from .eligibility import (DETAIL_FIELDS, STATES, judge_eligibility, eligibility_text,
                               eligibility_key, recommendable, college_blocked)
 except ImportError:  # pragma: no cover
-    from dmkj_client import DmkjClient, SessionExpiredError
+    from dmkj_client import DmkjClient, SessionExpiredError, activity_started
     from analyzer import judge, judge_rule, build_user_prompt, parse_llm_result
     from seen_store import SeenStore
     from reminders import ReminderStore, reminder_options, signup_timestamp, CHINA_TZ
@@ -336,7 +336,7 @@ class DmkjFinderPlugin(Star):
                 ctx, self.config.get("search", {}) or {}, before_request=self._guard_polling,
                 max_pages=max_pages, max_activities=max_activities,
             )
-            acts = acts[:max_activities]
+            acts = [a for a in acts[:max_activities] if not activity_started(a)]
             logger.info("[dmkj_finder] 有界扫描：最多%d页/%d条，本轮%d条", max_pages, max_activities, len(acts))
             self._latest_activity_ids = {str(a["activityId"]) for a in acts}
             # 所有已加载活动都参与资格刷新；详情走缓存，评分仍只处理新增。
@@ -378,6 +378,9 @@ class DmkjFinderPlugin(Star):
                 except Exception:
                     d = {}
                 b = dict(a)
+                for key in ("startdateDate", "startdate"):
+                    if d.get(key) is not None:
+                        b[key] = d[key]
                 b["eligibility"] = judge_eligibility(d, college_id, checked if d else now)
                 b["eligibility_detail"] = {key: d[key] for key in DETAIL_FIELDS if key in d}
                 b["eligibility_checked_at"] = checked if d else 0
@@ -396,7 +399,8 @@ class DmkjFinderPlugin(Star):
             if not pool:
                 return [], None
             with ThreadPoolExecutor(max_workers=min(4, len(pool))) as ex:
-                enriched = list(ex.map(_fetch_detail, pool))
+                enriched = [a for a in ex.map(_fetch_detail, pool) if not activity_started(a)]
+            self._latest_activity_ids = {str(a["activityId"]) for a in enriched}
             self._guard_polling()
             return enriched, None
         except PollingPausedError:
@@ -613,7 +617,8 @@ class DmkjFinderPlugin(Star):
             return
         self._reminder_busy = True
         try:
-            due = self.reminders.due(self.config, time.time())
+            due = [item for item in self.reminders.due(self.config, time.time())
+                   if not activity_started(item[1].get("activity", {}))]
             if not due:
                 return
             # 在尝试发送之前进入保护期，发送失败的重试也不恢复登录/轮询。
@@ -1057,6 +1062,7 @@ class DmkjFinderPlugin(Star):
             return
         records = [r for r in self.reminders.records.values()
                    if r.get("result") and recommendable(r.get("activity", {}))
+                   and not activity_started(r.get("activity", {}))
                    and not college_blocked(r.get("activity", {}))
                    and r.get("listed", True)]
         if not records:
