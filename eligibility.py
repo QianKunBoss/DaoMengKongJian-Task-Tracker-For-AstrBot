@@ -22,7 +22,7 @@ STATES = {
 NO_RIGHT = ("不在活动规定", "无权限", "不符合", "仅限", "不在该")
 DETAIL_FIELDS = (
     "ableJoinFlag", "canJoin", "countdown", "countdownText", "joinrange", "joinrangeText",
-    "collegeid", "collegename", "injoin", "joinNum", "joinmaxnum", "joinstartdate",
+    "collegeid", "collegename", "injoin", "signUpId", "joinNum", "joinmaxnum", "joinstartdate",
     "joinenddate", "startdateDate", "startdate", "outname", "tribeVo", "tribeId", "outid",
 )
 
@@ -64,7 +64,9 @@ def judge_eligibility(detail: dict, college_id=None, now=None) -> dict:
     secondary = float("inf")
     tribe_id = None
 
-    if _true(detail.get("injoin")):
+    # injoin 表示活动处于报名阶段，并非当前账号已报名。
+    # 仅个人报名记录 ID 是明确的已报名证据；缺失时不猜测。
+    if _number(detail.get("signUpId"), 0) > 0:
         state, reason = "JOINED", "已报名"
         secondary = _timestamp(detail.get("startdateDate")) or start or secondary
     elif (any(hint in text for hint in NO_RIGHT)
