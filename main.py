@@ -265,8 +265,13 @@ class DmkjFinderPlugin(Star):
         return time.time() < self._poll_pause_until
 
     def _guard_polling(self):
+        if not (self.config.get("activity_scan") or {}).get("enabled", True):
+            raise PollingPausedError("活动扫描已关闭")
         if self._is_polling_paused():
             raise PollingPausedError("报名保护期内暂停请求到梦空间")
+        deadline = getattr(self, "_scan_deadline", None)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RuntimeError("本轮活动扫描超过60秒，取消剩余请求")
 
     def _pause_polling_for_reminders(self, due: list):
         fresh = [record for _, record in due if not record.get("pause_started")]
@@ -294,6 +299,7 @@ class DmkjFinderPlugin(Star):
         if not acc.get("phone") or not acc.get("password"):
             return [], "未配置 account.phone / account.password"
         try:
+            self._scan_deadline = time.monotonic() + 60
             self._guard_polling()
             client = self._client
             ctx = self._ctx
@@ -318,9 +324,20 @@ class DmkjFinderPlugin(Star):
                 )
 
             self._guard_polling()
+            scan_cfg = self.config.get("activity_scan") or {}
+            def bounded_option(key, default, upper):
+                try:
+                    return max(1, min(upper, int(scan_cfg.get(key, default))))
+                except (TypeError, ValueError):
+                    return default
+            max_pages = bounded_option("max_pages", 2, 10)
+            max_activities = bounded_option("max_activities", 80, 400)
             acts = client.list_all_activities(
                 ctx, self.config.get("search", {}) or {}, before_request=self._guard_polling,
+                max_pages=max_pages, max_activities=max_activities,
             )
+            acts = acts[:max_activities]
+            logger.info("[dmkj_finder] 有界扫描：最多%d页/%d条，本轮%d条", max_pages, max_activities, len(acts))
             self._latest_activity_ids = {str(a["activityId"]) for a in acts}
             # 所有已加载活动都参与资格刷新；详情走缓存，评分仍只处理新增。
             pool = acts
@@ -399,6 +416,8 @@ class DmkjFinderPlugin(Star):
             self._client = None
             self._ctx = None
             return [], f"轮询异常: {e}"
+        finally:
+            self._scan_deadline = None
 
     # ---------------- 评分 + 推送（增量与开机共用） ----------------
     async def _process_activities(self, acts: list, title: str = "【到梦空间·新活动】",
@@ -479,6 +498,8 @@ class DmkjFinderPlugin(Star):
 
     async def _tick(self):
         """常规增量轮询：只处理去重后的新增活动。"""
+        if not (self.config.get("activity_scan") or {}).get("enabled", True):
+            return
         if self._is_polling_paused():
             self._last_new_count = 0
             return
@@ -522,6 +543,8 @@ class DmkjFinderPlugin(Star):
 
     async def _startup_push(self, show_all: bool = False):
         """开机：先推上线通知（状态/账号/剩余处理量），再总结全部活动并推送推荐的（高性价比）活动。"""
+        if not (self.config.get("activity_scan") or {}).get("enabled", True):
+            return
         if self._is_polling_paused():
             return
         if self._poll_busy:
@@ -975,7 +998,7 @@ class DmkjFinderPlugin(Star):
     @dmkj.command("now")
     async def dmkj_now(self, event: AstrMessageEvent):
         """立即轮询一次到梦空间（增量模式）"""
-        if self._is_polling_paused():
+        if self._is_polling_paused() or not (self.config.get("activity_scan") or {}).get("enabled", True):
             yield event.plain_result(self._pause_status())
             return
         await self._tick()
@@ -988,7 +1011,7 @@ class DmkjFinderPlugin(Star):
     @dmkj.command("pushall")
     async def dmkj_scan(self, event: AstrMessageEvent):
         """立即做一次全量扫描：总结所有活动并推送推荐的（忽略去重）"""
-        if self._is_polling_paused():
+        if self._is_polling_paused() or not (self.config.get("activity_scan") or {}).get("enabled", True):
             yield event.plain_result(self._pause_status())
             return
         await self._startup_push()
@@ -1066,6 +1089,8 @@ class DmkjFinderPlugin(Star):
             self.reminders.save()
 
     def _pause_status(self):
+        if not (self.config.get("activity_scan") or {}).get("enabled", True):
+            return "活动扫描已关闭，仅可查看缓存；配置 activity_scan.enabled=true 后重载启用"
         if not self._is_polling_paused():
             return "正常轮询"
         until = datetime.fromtimestamp(self._poll_pause_until, CHINA_TZ)

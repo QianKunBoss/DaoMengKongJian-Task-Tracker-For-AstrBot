@@ -171,16 +171,15 @@ class DmkjClient:
             return None
         return j.get("data") or {}
 
-    def list_all_activities(self, ctx: dict, search: dict = None, before_request=None):
-        """从第一页逐页拉取，空页结束；失败时不返回不完整快照。
-
-        不根据固定每页条数判断末页，以兼容服务端分页大小变化。
-        before_request 用于每次请求前检查报名保护期。
-        """
+    def list_all_activities(self, ctx: dict, search: dict = None, before_request=None,
+                            max_pages: int = 2, max_activities: int = 80):
+        """有界分页：默认最多两页/80条，绝不遍历全部历史活动。"""
         search = dict(search or {})
+        max_pages = max(1, min(10, int(max_pages)))
+        max_activities = max(1, min(400, int(max_activities)))
         out, seen = [], set()
         page = 1
-        while True:
+        while page <= max_pages:
             if before_request is not None:
                 before_request()
             items = self.list_activities(ctx, {**search, "page": page})
@@ -195,10 +194,13 @@ class DmkjClient:
                 if key not in seen:
                     seen.add(key)
                     fresh.append(activity)
+                    if len(out) + len(fresh) >= max_activities:
+                        return out + fresh
             if not fresh:
                 raise RuntimeError(f"活动列表第 {page} 页重复且无新增 ID，取消本轮扫描以避免遗漏活动")
             out.extend(fresh)
             page += 1
+        return out
 
     @staticmethod
     def fetch(cfg: dict):
