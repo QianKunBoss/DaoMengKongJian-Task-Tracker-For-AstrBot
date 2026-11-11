@@ -171,6 +171,35 @@ class DmkjClient:
             return None
         return j.get("data") or {}
 
+    def list_all_activities(self, ctx: dict, search: dict = None, before_request=None):
+        """从第一页逐页拉取，空页结束；失败时不返回不完整快照。
+
+        不根据固定每页条数判断末页，以兼容服务端分页大小变化。
+        before_request 用于每次请求前检查报名保护期。
+        """
+        search = dict(search or {})
+        out, seen = [], set()
+        page = 1
+        while True:
+            if before_request is not None:
+                before_request()
+            items = self.list_activities(ctx, {**search, "page": page})
+            if not items:
+                return out
+            fresh = []
+            for activity in items:
+                aid = activity.get("activityId")
+                if aid is None:
+                    raise RuntimeError(f"活动列表第 {page} 页缺少活动 ID，取消本轮扫描")
+                key = str(aid)
+                if key not in seen:
+                    seen.add(key)
+                    fresh.append(activity)
+            if not fresh:
+                raise RuntimeError(f"活动列表第 {page} 页重复且无新增 ID，取消本轮扫描以避免遗漏活动")
+            out.extend(fresh)
+            page += 1
+
     @staticmethod
     def fetch(cfg: dict):
         """便捷入口：从配置读账号，登录并拉列表。"""
@@ -179,4 +208,4 @@ class DmkjClient:
         version = (cfg or {}).get("version", CURRENT_APP_VERSION)
         client = DmkjClient(version=version)
         ctx = client.login(acc.get("phone"), acc.get("password"))
-        return client.list_activities(ctx, search)
+        return client.list_all_activities(ctx, search)

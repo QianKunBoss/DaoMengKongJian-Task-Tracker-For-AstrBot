@@ -318,7 +318,9 @@ class DmkjFinderPlugin(Star):
                 )
 
             self._guard_polling()
-            acts = client.list_activities(ctx, self.config.get("search", {}) or {})
+            acts = client.list_all_activities(
+                ctx, self.config.get("search", {}) or {}, before_request=self._guard_polling,
+            )
             self._latest_activity_ids = {str(a["activityId"]) for a in acts}
             # 所有已加载活动都参与资格刷新；详情走缓存，评分仍只处理新增。
             pool = acts
