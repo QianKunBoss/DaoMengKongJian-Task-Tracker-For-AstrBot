@@ -26,7 +26,7 @@ def activity_started(activity: dict, now: float | None = None) -> bool:
     now = time.time() if now is None else now
     tz = timezone(timedelta(hours=8))
     status = str(activity.get("statusText") or "").strip()
-    if any(word in status for word in ("已结束", "已开始", "进行中", "已取消", "已终止")) and "报名" not in status:
+    if any(word in status for word in ("已结束", "已完结", "已开始", "进行中", "已取消", "已终止")) and "报名" not in status:
         return True
     for key in ("startdateDate", "activityStartTime", "startTime"):
         value = activity.get(key)
@@ -211,8 +211,8 @@ class DmkjClient:
         return j.get("data") or {}
 
     def list_all_activities(self, ctx: dict, search: dict = None, before_request=None,
-                            max_pages: int = 2, max_activities: int = 80):
-        """有界分页：默认最多两页/80条，绝不遍历全部历史活动。"""
+                            max_pages: int = 10, max_activities: int = 400):
+        """遇第一条已结束/已完结即停止，最多10页/400条兜底。"""
         search = dict(search or {})
         max_pages = max(1, min(10, int(max_pages)))
         max_activities = max(1, min(400, int(max_activities)))
@@ -226,6 +226,10 @@ class DmkjClient:
                 return [a for a in out if not activity_started(a)]
             fresh = []
             for activity in items:
+                # 按接口当前排序约定，未结束活动在前，历史活动在后。
+                # 仅服务端明确的结束状态触发截断，已开始/进行中不作为分页边界。
+                if str(activity.get("statusText") or "").strip() in ("已结束", "已完结"):
+                    return [a for a in out + fresh if not activity_started(a)]
                 aid = activity.get("activityId")
                 if aid is None:
                     raise RuntimeError(f"活动列表第 {page} 页缺少活动 ID，取消本轮扫描")

@@ -27,13 +27,13 @@
       },
       "max_pages": {
         "type": "int",
-        "description": "每轮最多获取页数，默认2，范围1~10",
-        "default": 2
+        "description": "遇首条已结束/已完结停止；页数保护上限，默认10，范围1~10",
+        "default": 10
       },
       "max_activities": {
         "type": "int",
-        "description": "每轮最多处理活动数（详情及评分），默认80，范围1~400",
-        "default": 80
+        "description": "每轮最多处理活动数（详情及评分），默认400，范围1~400",
+        "default": 400
       }
     }
   },

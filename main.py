@@ -330,8 +330,8 @@ class DmkjFinderPlugin(Star):
                     return max(1, min(upper, int(scan_cfg.get(key, default))))
                 except (TypeError, ValueError):
                     return default
-            max_pages = bounded_option("max_pages", 2, 10)
-            max_activities = bounded_option("max_activities", 80, 400)
+            max_pages = bounded_option("max_pages", 10, 10)
+            max_activities = bounded_option("max_activities", 400, 400)
             acts = client.list_all_activities(
                 ctx, self.config.get("search", {}) or {}, before_request=self._guard_polling,
                 max_pages=max_pages, max_activities=max_activities,
