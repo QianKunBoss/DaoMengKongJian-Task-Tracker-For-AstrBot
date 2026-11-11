@@ -16,10 +16,73 @@
       }
     }
   },
+  "activity_scan": {
+    "type": "object",
+    "description": "有界活动扫描（避免遍历历史活动）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "是否允许活动扫描和自动登录，关闭后仍可使用缓存列表",
+        "default": true
+      },
+      "max_pages": {
+        "type": "int",
+        "description": "遇首条已结束/已完结停止；页数保护上限，默认10，范围1~10",
+        "default": 10
+      },
+      "max_activities": {
+        "type": "int",
+        "description": "每轮最多处理活动数（详情及评分），默认400，范围1~400",
+        "default": 400
+      }
+    }
+  },
   "poll_interval": {
     "type": "int",
     "description": "轮询间隔（秒），默认 60",
     "default": 60
+  },
+  "eligibility": {
+    "type": "object",
+    "description": "报名资格判断与可参与优先排序",
+    "items": {
+      "notify_changes": {
+        "type": "bool",
+        "description": "原本受限/满员/等待开放的活动变为等待报名或可报名时提醒",
+        "default": true
+      },
+      "cache_ttl": {
+        "type": "int",
+        "description": "稳定资格详情缓存秒数，默认600，最小60；可操作状态按轮询间隔刷新",
+        "default": 600
+      },
+      "college_id": {
+        "type": "string",
+        "description": "当前账号院系ID备用值；优先取登录响应，留空且登录未返回时不猜测学院归属",
+        "default": ""
+      }
+    }
+  },
+  "signup_reminder": {
+    "type": "object",
+    "description": "报名开始前提醒（独立于新活动推荐阈值）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用报名开始前提醒",
+        "default": true
+      },
+      "minutes_before": {
+        "type": "int",
+        "description": "报名开始前多少分钟提醒，默认 10，最小 1",
+        "default": 10
+      },
+      "priorities": {
+        "type": "list",
+        "description": "需要提醒的等级，可填写高性价比、中、低性价比；默认只提醒高性价比",
+        "default": ["高性价比"]
+      }
+    }
   },
   "timeout": {
     "type": "int",

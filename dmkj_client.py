@@ -11,12 +11,48 @@ import json
 import secrets
 import string
 import time
+import re
+from datetime import datetime, timedelta, timezone
 from binascii import b2a_hex
 
 import requests
 from Crypto.Cipher import AES, DES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
+
+
+def activity_started(activity: dict, now: float | None = None) -> bool:
+    """仅过滤已开始举行/结束的活动；报名中不代表活动已经举行。"""
+    now = time.time() if now is None else now
+    tz = timezone(timedelta(hours=8))
+    status = str(activity.get("statusText") or "").strip()
+    if any(word in status for word in ("已结束", "已完结", "已开始", "进行中", "已取消", "已终止")) and "报名" not in status:
+        return True
+    for key in ("startdateDate", "activityStartTime", "startTime"):
+        value = activity.get(key)
+        if value in (None, "", 0, "0") or isinstance(value, bool):
+            continue
+        try:
+            stamp = float(value)
+            if stamp >= 100_000_000_000:
+                stamp /= 1000
+            if stamp > 0:
+                return stamp <= now
+        except (ValueError, TypeError, OverflowError):
+            pass
+    for key in ("startdate", "activitytime"):
+        text = str(activity.get(key) or "")
+        match = re.search(r"(\d{4})[.年/-](\d{1,2})[.月/-](\d{1,2})日?(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?", text)
+        if not match:
+            continue
+        year, month, day, hour, minute, second = match.groups()
+        try:
+            start = datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0), tzinfo=tz)
+            # 当天仅有日期时不猜测午夜开场，保留到下一天。
+            return start.timestamp() <= now if hour is not None else start.date() < datetime.fromtimestamp(now, tz).date()
+        except ValueError:
+            continue
+    return False
 
 # ---------------- 常量 ----------------
 BASE_URL = "https://appdmkj.5idream.net/v2/"
@@ -82,6 +118,10 @@ def des_encrypt_password(pwd: str) -> str:
     return b2a_hex(ct).upper().decode("ascii")
 
 
+class SessionExpiredError(RuntimeError):
+    pass
+
+
 class DmkjClient:
     """精简版 v6 客户端：登录 + 拉活动列表。"""
 
@@ -113,7 +153,8 @@ class DmkjClient:
             raise RuntimeError(f"登录失败: {msg}")
         d = j["data"]
         return {"uid": d["uid"], "token": d["token"],
-                "name": d.get("name"), "school": d.get("schoolName")}
+                "name": d.get("name"), "school": d.get("schoolName"),
+                "collegeId": d.get("collegeId") or d.get("collegeid")}
 
     def _post(self, endpoint: str, biz: dict, ctx: dict):
         params = {
@@ -124,7 +165,10 @@ class DmkjClient:
         d = build_d(params)
         r = self.session.post(BASE_URL + endpoint, headers=self._headers(),
                               data={"d": d}, timeout=self.timeout)
-        return r.json()
+        result = r.json()
+        if str(result.get("code")) in ("10007", "10005"):
+            raise SessionExpiredError("到梦空间登录态已失效")
+        return result
 
     def list_activities(self, ctx: dict, search: dict = None):
         search = search or {}
@@ -141,13 +185,20 @@ class DmkjClient:
             "level": search.get("level", ""),
         }
         j = self._post("activity/activities", biz, ctx)
+        if str(j.get("code")) != "100":
+            raise RuntimeError(f"活动列表请求失败（code={j.get('code')}）")
         out = []
         for it in (j.get("data") or {}).get("list") or []:
             out.append({
-                "activityId": it.get("activityId"),
+                "activityId": it.get("activityId") or it.get("aid"),
                 "name": it.get("name"),
                 "statusText": it.get("statusText"),
+                "startdateDate": it.get("startdateDate"),
+                "startdate": it.get("startdate"),
+                "activityStartTime": it.get("activityStartTime"),
                 "activitytime": it.get("activitytime"),
+                "joinStartTime": (it.get("joinstartdate") or it.get("joinStartDate")
+                                  or it.get("joinStartTime") or it.get("joinstarttime")),
                 "credit": it.get("maxScore"),
             })
         return out
@@ -155,9 +206,44 @@ class DmkjClient:
     def get_detail(self, ctx: dict, activity_id):
         biz = {"activityId": activity_id}
         j = self._post("activity/detail", biz, ctx)
-        if j.get("code") != "100":
+        if str(j.get("code")) != "100":
             return None
         return j.get("data") or {}
+
+    def list_all_activities(self, ctx: dict, search: dict = None, before_request=None,
+                            max_pages: int = 10, max_activities: int = 400):
+        """遇第一条已结束/已完结即停止，最多10页/400条兜底。"""
+        search = dict(search or {})
+        max_pages = max(1, min(10, int(max_pages)))
+        max_activities = max(1, min(400, int(max_activities)))
+        out, seen = [], set()
+        page = 1
+        while page <= max_pages:
+            if before_request is not None:
+                before_request()
+            items = self.list_activities(ctx, {**search, "page": page})
+            if not items:
+                return [a for a in out if not activity_started(a)]
+            fresh = []
+            for activity in items:
+                # 按接口当前排序约定，未结束活动在前，历史活动在后。
+                # 仅服务端明确的结束状态触发截断，已开始/进行中不作为分页边界。
+                if str(activity.get("statusText") or "").strip() in ("已结束", "已完结"):
+                    return [a for a in out + fresh if not activity_started(a)]
+                aid = activity.get("activityId")
+                if aid is None:
+                    raise RuntimeError(f"活动列表第 {page} 页缺少活动 ID，取消本轮扫描")
+                key = str(aid)
+                if key not in seen:
+                    seen.add(key)
+                    fresh.append(activity)
+                    if len(out) + len(fresh) >= max_activities:
+                        return [a for a in out + fresh if not activity_started(a)]
+            if not fresh:
+                raise RuntimeError(f"活动列表第 {page} 页重复且无新增 ID，取消本轮扫描以避免遗漏活动")
+            out.extend(fresh)
+            page += 1
+        return [a for a in out if not activity_started(a)]
 
     @staticmethod
     def fetch(cfg: dict):
@@ -167,4 +253,4 @@ class DmkjClient:
         version = (cfg or {}).get("version", CURRENT_APP_VERSION)
         client = DmkjClient(version=version)
         ctx = client.login(acc.get("phone"), acc.get("password"))
-        return client.list_activities(ctx, search)
+        return client.list_all_activities(ctx, search)
