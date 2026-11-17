@@ -62,6 +62,7 @@ try:
     from .reminders import ReminderStore, reminder_options, signup_timestamp, CHINA_TZ
     from .eligibility import (DETAIL_FIELDS, STATES, judge_eligibility, eligibility_text,
                               eligibility_key, recommendable, college_blocked)
+    from .multi_accounts import account_configs
 except ImportError:  # pragma: no cover
     from dmkj_client import DmkjClient, SessionExpiredError, activity_started
     from analyzer import judge, judge_rule, build_user_prompt, parse_llm_result
@@ -69,6 +70,7 @@ except ImportError:  # pragma: no cover
     from reminders import ReminderStore, reminder_options, signup_timestamp, CHINA_TZ
     from eligibility import (DETAIL_FIELDS, STATES, judge_eligibility, eligibility_text,
                              eligibility_key, recommendable, college_blocked)
+    from multi_accounts import account_configs
 
 try:
     from astrbot.api import StarTools
@@ -175,6 +177,11 @@ class DmkjFinderPlugin(Star):
         self._detail_cache = {}
         self._latest_activity_ids = None
         self._poll_pause_until = 0.0
+        self._workers = []
+        self._multi_mode = False
+        self._scan_slots = None
+        self._startup_task = None
+        self._stopping = False
 
     async def initialize(self):
         # 数据目录：优先用框架接口，失败回退到插件本地 data/，避免个别版本 StarTools 接口差异导致插件加载即崩溃
@@ -183,6 +190,25 @@ class DmkjFinderPlugin(Star):
         except Exception as e:
             logger.warning("[dmkj_finder] get_data_dir 失败，回退到本地 data 目录: %s", e)
             data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        os.makedirs(str(data_dir), exist_ok=True)
+        if not getattr(self, "_account_worker", False) and self.config.get("accounts"):
+            configs = account_configs(self.config)
+            self._multi_mode = True
+            slots = asyncio.Semaphore(2)
+            try:
+                for key, config in configs:
+                    worker = DmkjFinderPlugin(self.context, config)
+                    worker._account_worker = True
+                    worker._account_data_dir = os.path.join(str(data_dir), "accounts", key)
+                    worker._scan_slots = slots
+                    self._workers.append(worker)
+                    await worker.initialize()
+            except Exception:
+                await self.terminate()
+                raise
+            logger.info("[dmkj_finder] 多账号模式已启动，启用%d个账号，扫描总并发2，详情总并发4", len(self._workers))
+            return
+        data_dir = getattr(self, "_account_data_dir", str(data_dir))
         os.makedirs(str(data_dir), exist_ok=True)
         self._data_dir = str(data_dir)
         try:
@@ -209,15 +235,15 @@ class DmkjFinderPlugin(Star):
 
         self.scheduler = AsyncIOScheduler(event_loop=loop, timezone="Asia/Shanghai")
         # 常规增量轮询：首次延后到 poll_interval 秒后，避免与开机推送抢跑。
-        # max_instances>1 配合下方 _tick 的互斥守卫，避免“上一轮未结束本轮被跳过”的告警；
-        # misfire_grace_time/coalesce 让偶发延迟仍能合并执行而不是被丢弃。
+        # 每个账号最多挂起一次定时轮询，避免多账号排队时累积扫描任务。
+        # misfire_grace_time/coalesce 合并偶发延迟。
         self.scheduler.add_job(
             self._tick,
             "interval",
             seconds=interval,
             id="dmkj_poll",
             next_run_time=datetime.now() + timedelta(seconds=max(interval, 15)),
-            max_instances=5,
+            max_instances=1,
             misfire_grace_time=120,
             coalesce=True,
         )
@@ -242,7 +268,7 @@ class DmkjFinderPlugin(Star):
     def _schedule_startup(self, loop):
         """在运行中的事件循环上派发一次开机扫描；拿不到运行 loop 时回退到调度器的 date 触发。"""
         try:
-            loop.call_soon(asyncio.ensure_future, self._delayed_startup())
+            self._startup_task = loop.create_task(self._delayed_startup())
         except RuntimeError:
             self.scheduler.add_job(
                 self._startup_push,
@@ -257,6 +283,12 @@ class DmkjFinderPlugin(Star):
         await self._startup_push()
 
     async def terminate(self):
+        self._stopping = True
+        for worker in self._workers:
+            await worker.terminate()
+        if self._startup_task and not self._startup_task.done():
+            self._startup_task.cancel()
+            await asyncio.gather(self._startup_task, return_exceptions=True)
         if self.scheduler:
             self.scheduler.shutdown(wait=False)
             logger.info("[dmkj_finder] 调度器已关闭")
@@ -265,6 +297,8 @@ class DmkjFinderPlugin(Star):
         return time.time() < self._poll_pause_until
 
     def _guard_polling(self):
+        if self._stopping:
+            raise PollingPausedError("插件正在关闭")
         if not (self.config.get("activity_scan") or {}).get("enabled", True):
             raise PollingPausedError("活动扫描已关闭")
         if self._is_polling_paused():
@@ -395,10 +429,10 @@ class DmkjFinderPlugin(Star):
                 b["excerpt"] = (((d.get("content") or "") + " " + (d.get("joinTip") or ""))[:120]).strip()
                 return b
 
-            # 并发拉详情（最多 5 并发，兼顾速度与对服务端友好）。无活动时直接返回。
+            # 单账号最多4并发；多账号每账号最多2，并共享2个扫描槽位。
             if not pool:
                 return [], None
-            with ThreadPoolExecutor(max_workers=min(4, len(pool))) as ex:
+            with ThreadPoolExecutor(max_workers=min(2 if self._scan_slots else 4, len(pool))) as ex:
                 enriched = [a for a in ex.map(_fetch_detail, pool) if not activity_started(a)]
             self._latest_activity_ids = {str(a["activityId"]) for a in enriched}
             self._guard_polling()
@@ -501,6 +535,14 @@ class DmkjFinderPlugin(Star):
         return len(to_push)
 
     async def _tick(self):
+        if self._scan_slots:
+            async with self._scan_slots:
+                if not self._stopping:
+                    await self._tick_one()
+        elif not self._stopping:
+            await self._tick_one()
+
+    async def _tick_one(self):
         """常规增量轮询：只处理去重后的新增活动。"""
         if not (self.config.get("activity_scan") or {}).get("enabled", True):
             return
@@ -546,6 +588,14 @@ class DmkjFinderPlugin(Star):
             self._poll_busy = False
 
     async def _startup_push(self, show_all: bool = False):
+        if self._scan_slots:
+            async with self._scan_slots:
+                if not self._stopping:
+                    await self._startup_push_one(show_all)
+        elif not self._stopping:
+            await self._startup_push_one(show_all)
+
+    async def _startup_push_one(self, show_all: bool = False):
         """开机：先推上线通知（状态/账号/剩余处理量），再总结全部活动并推送推荐的（高性价比）活动。"""
         if not (self.config.get("activity_scan") or {}).get("enabled", True):
             return
@@ -887,7 +937,8 @@ class DmkjFinderPlugin(Star):
         self._last_image_renderer = None
         if Image is None or not ((hasattr(self, "html_render")) or render_card is not None):
             return False
-        data = self._collect_card_data(acts, results, to_push, title)
+        name = self.config.get("_account_name")
+        data = self._collect_card_data(acts, results, to_push, f"【{name}】{title}" if name else title)
 
         image_comp = None
         # 1) AstrBot 文转图（HTML 卡，效果最佳）
@@ -943,6 +994,8 @@ class DmkjFinderPlugin(Star):
             return False
 
     async def _send(self, text: str) -> bool:
+        if self.config.get("_account_name"):
+            text = f"【{self.config['_account_name']}】\n{text}"
         push = self.config.get("push", {}) or {}
         session = push.get("session")
         chain = MessageChain([Plain(text)])
@@ -996,12 +1049,42 @@ class DmkjFinderPlugin(Star):
         return False
 
     # ---------------- 指令 ----------------
+    async def _dispatch_accounts(self, method: str, event):
+        workers = [worker for worker in self._workers
+                   if (worker.config.get("push") or {}).get("session") == event.unified_msg_origin]
+        if not workers:
+            yield event.plain_result("当前会话未绑定启用的到梦账号，请在 accounts 中配置 session。")
+            return
+
+        async def collect(worker):
+            try:
+                results = [event.plain_result(f"【{worker.config['_account_name']}】")]
+                results.extend([result async for result in getattr(worker, method)(event)])
+                return results
+            except Exception:
+                logger.exception("[dmkj_finder] 账号指令失败：%s", worker.config["_account_name"])
+                return [event.plain_result(f"【{worker.config['_account_name']}】操作失败，请查看日志。")]
+
+        if method in ("dmkj_now", "dmkj_scan"):
+            groups = await asyncio.gather(*(collect(worker) for worker in workers))
+            for results in groups:
+                for result in results:
+                    yield result
+        else:
+            for worker in workers:
+                for result in await collect(worker):
+                    yield result
+
     @filter.command_group("dmkj")
     def dmkj(self):
         pass
 
     @dmkj.command("now")
     async def dmkj_now(self, event: AstrMessageEvent):
+        if self._multi_mode:
+            async for result in self._dispatch_accounts("dmkj_now", event):
+                yield result
+            return
         """立即轮询一次到梦空间（增量模式）"""
         if self._is_polling_paused() or not (self.config.get("activity_scan") or {}).get("enabled", True):
             yield event.plain_result(self._pause_status())
@@ -1015,6 +1098,10 @@ class DmkjFinderPlugin(Star):
     @dmkj.command("scan")
     @dmkj.command("pushall")
     async def dmkj_scan(self, event: AstrMessageEvent):
+        if self._multi_mode:
+            async for result in self._dispatch_accounts("dmkj_scan", event):
+                yield result
+            return
         """立即做一次全量扫描：总结所有活动并推送推荐的（忽略去重）"""
         if self._is_polling_paused() or not (self.config.get("activity_scan") or {}).get("enabled", True):
             yield event.plain_result(self._pause_status())
@@ -1027,6 +1114,10 @@ class DmkjFinderPlugin(Star):
 
     @dmkj.command("status")
     async def dmkj_status(self, event: AstrMessageEvent):
+        if self._multi_mode:
+            async for result in self._dispatch_accounts("dmkj_status", event):
+                yield result
+            return
         """查看插件运行状态"""
         last = self._last_poll_ts
         last_s = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last)) if last else "从未"
@@ -1056,6 +1147,10 @@ class DmkjFinderPlugin(Star):
 
     @dmkj.command("list")
     async def dmkj_list(self, event: AstrMessageEvent):
+        if self._multi_mode:
+            async for result in self._dispatch_accounts("dmkj_list", event):
+                yield result
+            return
         """合并转发所有通过资格筛选的评分活动，直接回复当前会话。"""
         if self.reminders is None:
             yield event.plain_result("活动缓存尚未初始化，请稍后再试。")
@@ -1077,6 +1172,8 @@ class DmkjFinderPlugin(Star):
         if self._is_polling_paused():
             header += "\n" + self._pause_status()
         texts = [header]
+        if self.config.get("_account_name"):
+            texts[0] = f"【{self.config['_account_name']}】\n" + texts[0]
         for record in records:
             result = record["result"]
             source = {"llm": "LLM 评判", "rule": "本地规则（未启用模型或评分兜底）"}.get(
@@ -1084,7 +1181,7 @@ class DmkjFinderPlugin(Star):
             texts.append(self._fmt(record["activity"], result) + f"\n评分来源：{source}")
         sender = str(event.get_self_id() or "0")
         for offset in range(0, len(texts), 50):
-            nodes = [Node(uin=sender, name="到梦空间助手", content=[Plain(text)])
+            nodes = [Node(uin=sender, name=self.config.get("_account_name") or "到梦空间助手", content=[Plain(text)])
                      for text in texts[offset:offset + 50]]
             yield event.chain_result([Nodes(nodes=nodes)])
 

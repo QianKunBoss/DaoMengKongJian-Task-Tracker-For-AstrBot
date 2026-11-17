@@ -1,7 +1,51 @@
 {
+  "accounts": {
+    "type": "template_list",
+    "description": "多账号查询；非空时替代旧 account，最多同时扫描2个账号",
+    "default": [],
+    "templates": {
+      "account": {
+        "name": "到梦账号",
+        "items": {
+          "name": {
+            "type": "string",
+            "description": "账号名称（唯一，用于区分推送）",
+            "default": ""
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用此账号",
+            "default": true
+          },
+          "phone": {
+            "type": "string",
+            "description": "登录手机号（账号间不能重复）",
+            "default": ""
+          },
+          "password": {
+            "type": "string",
+            "description": "登录密码",
+            "default": "",
+            "secret": true
+          },
+          "session": {
+            "type": "string",
+            "description": "推送及指令会话，留空继承全局 push.session；在目标会话发送 /dmkj session 获取",
+            "default": ""
+          },
+          "college_id": {
+            "type": "string",
+            "description": "该账号院系ID备用值，优先使用登录响应，不继承旧账号院系",
+            "default": ""
+          }
+        },
+        "display_item": "name"
+      }
+    }
+  },
   "account": {
     "type": "object",
-    "description": "到梦空间账号（用于登录拉取活动）",
+    "description": "旧版单账号配置（accounts 非空时改用多账号列表）",
     "items": {
       "phone": {
         "type": "string",
@@ -80,7 +124,9 @@
       "priorities": {
         "type": "list",
         "description": "需要提醒的等级，可填写高性价比、中、低性价比；默认只提醒高性价比",
-        "default": ["高性价比"]
+        "default": [
+          "高性价比"
+        ]
       }
     }
   },
