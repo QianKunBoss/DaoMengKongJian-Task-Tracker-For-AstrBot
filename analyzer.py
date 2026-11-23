@@ -12,10 +12,9 @@ LLM 调用分两种：
 2) 显式直连（测试/特殊场景）：analyzer.judge 在配置含 base_url+api_key 时直接打 OpenAI。
 """
 import json
-import logging
 import re
 
-logger = logging.getLogger("dmkj_finder.analyzer")
+from astrbot.api import logger
 
 # 低付出特征词：命中 -> 性价比分 +（活少：听讲/观看/打卡/签到/体验类，基本去了就有）
 LOW_EFFORT = [

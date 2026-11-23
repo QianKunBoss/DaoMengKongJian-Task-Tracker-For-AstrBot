@@ -3,7 +3,7 @@ author: QianKunBoss
 display_name: 到梦空间活动雷达
 short_desc: 自动盯到梦空间新活动，AI 筛出「学分高、付出少」的推送提醒
 desc: 到梦空间（DMKJ）活动探测与推送插件。定时轮询学校到梦空间的活动列表，用 AI 或规则给每个活动做性价比评分（学分/付出比），开机总结全部活动并把高分推荐以长图卡片推送到微信/QQ。支持增量轮询去重、开机上线通知、t2i+本地 Pillow 长图双保险、发送频控退避。指令：/dmkj now|scan|status|session|image。
-version: "1.0.0"
+version: "1.0.1"
 repo: https://github.com/QianKunBoss/DaoMengKongJian-Task-Tracker-For-AstrBot
 astrbot_version: ">=4.20.0"
 tags:

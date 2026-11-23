@@ -74,7 +74,7 @@ except ImportError:  # pragma: no cover
         render_card = None
 
 PLUGIN_ID = "astrbot_plugin_dmkj_finder"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.0.1"
 
 # 长图卡片模板（Jinja2）：白底 + 钢蓝主色 + 圆角卡片，full_page 截图即为长图
 CARD_TMPL = """<!DOCTYPE html>
@@ -148,12 +148,15 @@ class DmkjFinderPlugin(Star):
         self._login_info: dict | None = None
 
     async def initialize(self):
-        # 数据目录：优先用框架接口，失败回退到插件本地 data/，避免个别版本 StarTools 接口差异导致插件加载即崩溃
+        # 数据目录：优先用框架接口（data/plugin_data/<plugin_name>），
+        # 失败时按同一规范手工推算，避免个别版本 StarTools 接口差异导致插件加载即崩溃
         try:
             data_dir = StarTools.get_data_dir(PLUGIN_ID)
         except Exception as e:
-            logger.warning("[dmkj_finder] get_data_dir 失败，回退到本地 data 目录: %s", e)
-            data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+            logger.warning("[dmkj_finder] get_data_dir 失败，回退到 data/plugin_data/%s: %s", PLUGIN_ID, e)
+            _plugin_dir = os.path.dirname(os.path.abspath(__file__))      # .../data/plugins/<plugin>
+            _data_root = os.path.dirname(os.path.dirname(_plugin_dir))    # .../data
+            data_dir = os.path.join(_data_root, "plugin_data", PLUGIN_ID)
         os.makedirs(str(data_dir), exist_ok=True)
         self._data_dir = str(data_dir)
         self.seen = SeenStore(os.path.join(str(data_dir), "seen.json"))
